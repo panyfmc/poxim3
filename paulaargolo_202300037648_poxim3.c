@@ -4,7 +4,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <setjmp.h>
 
+jmp_buf exception_buffer;  //usada para armazenar o estado do programa, teste modi.
 
 void verifyZero(uint32_t reg, uint32_t teste, uint64_t temp) {
   if (reg == 0) {
@@ -55,6 +57,15 @@ uint32_t ExtendedBit25To32(uint32_t hex) {
     return hex;
   }
 }
+
+int signalBit15To32(uint32_t hex) {
+  if (hex & 0x00008000) { // Verifica se o bit 15 está definido (bit de sinal)
+    return (int)(hex | 0xFFFF0000); // Se sim, estende com uns nos bits superiores e converte para int
+  } else {
+    return (int)hex; // Se não, retorna o número original convertido para int
+  }
+}
+
 
 
 char *getRegisterSmaller(uint32_t reg) {
@@ -269,17 +280,105 @@ uint32_t bitSelect(uint8_t numberBit, uint32_t hex, uint32_t address) {
   return selectedBit;
 }
 
-
-// Função para configurar o estado do registrador FPU
+// status da FPU
 void statusFpu(uint8_t fpuSTandOP, bool OneOrZero) {
-    const uint8_t PRONTO = 0; // Representa o estado "PRONTO"
-    const uint8_t ERRO = 0b100000; // Representa o estado "ERRO"
+    const uint8_t PRONTO = 0; 
+    const uint8_t ERRO = 0b100000; 
     if (OneOrZero) {
-      fpuSTandOP |= ERRO; // Faz a operação OR bit a bit com o estado "ERRO"
+      fpuSTandOP |= ERRO; 
     } else {
-      fpuSTandOP &= ~ERRO; // Faz a operação AND bit a bit com o complemento do estado "ERRO"
+      fpuSTandOP &= ~ERRO; 
     }
 }
+
+typedef struct {
+    int validade;            
+    int idade; 
+    int identificador;      
+    int p1;
+    int p2;
+    int p3;
+    int p4;          // socorro
+} CacheEntrada;
+
+uint32_t getValidade(const CacheEntrada *entry) {
+    return entry->validade;
+}
+
+uint32_t getAge(const CacheEntrada *entry) {
+    return entry->idade;
+}
+
+void setAge(CacheEntrada *entry, uint32_t idade) {
+    entry->idade = idade;
+}
+
+uint32_t getIdentifier(const CacheEntrada *entry) {
+    return entry->identificador;
+}
+
+void setValidate(CacheEntrada *entry, uint32_t validate) {
+    entry->validade = validate;
+}
+
+uint32_t getPalavra(const CacheEntrada *entry, uint32_t pNumber) {
+  switch (pNumber) {
+      case 0:
+          return entry->p1;
+      case 1:
+          return entry->p2;
+      case 2:
+          return entry->p3;
+      case 3:
+          return entry->p4;
+      default:
+          return 0;
+  }
+}
+
+typedef struct {
+	uint32_t grauAssociatividade;
+	uint32_t TotalBlocos;
+	CacheEntrada *blocos;
+	int contUlt;
+} Cache;
+
+Cache *criarCache(uint32_t grauAssociatividade, uint32_t numeroTotalBlocos) {
+	Cache *cache = (Cache *)malloc(sizeof(Cache));
+	if (cache != NULL) {
+		cache->grauAssociatividade = grauAssociatividade;
+		cache->TotalBlocos = numeroTotalBlocos;
+		cache->blocos = (CacheEntrada *)malloc(numeroTotalBlocos * sizeof(CacheEntrada));
+		if (cache->blocos == NULL) {
+			free(cache);
+			return NULL;
+		}
+		cache->contUlt = -1;
+	}
+	return cache;
+}
+
+uint32_t totalBlocos(const Cache *cache) {
+    return cache->TotalBlocos;
+}
+
+uint32_t grauAssociatividade(const Cache *cache) {
+    return cache->grauAssociatividade;
+}
+
+CacheEntrada *getBloco(const Cache *cache, uint32_t linha) {
+    CacheEntrada *result = (CacheEntrada *)malloc(2 * sizeof(CacheEntrada));
+    if (result == NULL) {
+        // Tratar erro de alocação de memória
+        return NULL;
+    }
+
+    result[0] = cache->blocos[cache->grauAssociatividade * linha];
+    result[1] = cache->blocos[cache->grauAssociatividade * linha + 1];
+
+    return result;
+}
+
 
 
 int main(int argc, char *argv[]) { 
@@ -341,11 +440,14 @@ int main(int argc, char *argv[]) {
     uint32_t pc = 0, xyl = 0, sp = 0, tmpSubi = 0, i = 0, ipc = 0, cr = 0, temp = 0, addr = 0, shift = 0, alt = 0, hardwareValue = 0, novo_PC, novo_SP, novo_CR, novo_IPC, memoryFpu, SR = 0, uint32_Rz = 0;
     uint64_t tmpSla_1 = 0, tmpSll_1 = 0,tmpSra_1 = 0, tmpSrl_1 = 0, cmp1 = 0, cmpi1 = 0, tmpMul_1 = 0, tmpMuls_1 = 0, tmpAdd_1 = 0;
     bool condicao = true;
+    int modi_signal = 0;
 
     R[28] = ((MEM8[R[29] + 0] << 24) | (MEM8[R[29] + 1] << 16) | (MEM8[R[29] + 2] << 8) | (MEM8[R[29] + 3] << 0)) | MEM32[R[29] >> 2];
 
     uint8_t opcode = (R[28] & (0b111111 << 26)) >> 26;
     uint8_t subcode = (R[28] & (0b111 << 8)) >> 8;
+    uint32_t idade = (pc & ~0b1111111) >> 7;
+    uint32_t linha = (pc & (0b111 << 4)) >> 4;
 
      
     switch (opcode) 
@@ -493,10 +595,10 @@ int main(int argc, char *argv[]) {
 
            
             // R[l] : R[z] = R[x] * R[y]
-            tmpMul_1 = (((uint64_t)R[xyl] << 32) | (uint64_t)R[z]);
+            tmpMul_1 = (R[x] * R[y]);
 
-            verifyZero(xyl, 1, tmpMul_1);
-            verifyZero(z, 1, tmpMul_1);
+            //verifyZero(xyl, 1, tmpMul_1);
+            //verifyZero(z, 1, tmpMul_1);
 
              // Extracting the 32 most significant bits
             R[xyl] = (uint32_t)setRegistrador(xyl, (tmpMul_1 >> 32) & 0xFFFFFFFF);
@@ -505,14 +607,14 @@ int main(int argc, char *argv[]) {
 
             
             //zn rlrz = 0
-            if ((tmpMul_1) != 0) {
+            if (tmpMul_1 != 0) {
               R[31] = R[31] & ~0b1000000;
             } else {
               R[31] = R[31] | 0b1000000; 
             }
 
             //cy rl != 0
-            if ((R[xyl]) != 0) {
+            if (R[xyl] != 0) {
               R[31] = R[31] | 0b1;
             } else {
               R[31] = R[31] & ~0b1; 
@@ -1267,10 +1369,15 @@ int main(int argc, char *argv[]) {
         z = (R[28] & (0b11111 << 21)) >> 21;
         x = (R[28] & (0b11111 << 16)) >> 16; 
         i = R[28] & 0xFFFF;
-       
-        R[z] = (R[x] % ExtendedBit15To32(i));
 
-      // ZN rz = 0
+        if (setjmp(exception_buffer) == 0) {
+          if (i == 0) {
+            longjmp(exception_buffer, 1); // Retorna para o bloco de tratamento de exceção
+          }
+        R[z] = (int)(R[x] % signalBit15To32(i));
+        }
+
+        // ZN rz = 0
         if (R[z] != 0) {
           R[31] = R[31] & ~0b1000000;
         } else {
@@ -1278,32 +1385,22 @@ int main(int argc, char *argv[]) {
         }
 
         // ZD i = 0
-
-        if (ExtendedBit15To32(i) != 0) {
-              R[31] = R[31] & ~0b100000;
-            } else if (ExtendedBit15To32(i) == 0 || R[31] & 0b10) {
-              R[31] = R[31] | 0b100000;
-              R[29] = 0x00000008;
-              R[26] = 0;
-              R[27] = R[29];
-            } else {
-              R[31] = R[31] | 0b100000;
-            }
-
-        if (ExtendedBit15To32(i) != 0) {
-          R[31] = R[31] & ~0b100000;
-        } else {
-            R[31] = R[31] | 0b100000;
+        if (i == 0) {
+          R[31] = R[31] | 0b100000;
+          //bit IE true
+          if (R[31] & 0b10) {
+            activeSW = true;
+          } 
         }
 
-        // ov rl != 0
+        // OV i <-- 0
         R[31] = R[31] & ~0b1000;
 
 
       //0x????????:	modi rz,rx,s             	Rz=Rx%0x????????=0x????????,SR=0x????????
         sprintf(instrucao, "modi %s,%s,%i", getRegisterSmaller(z), getRegisterSmaller(x), ExtendedBit15To32(i));
-        fprintf(output, "0x%08X:\t%-25s\t%s=%s%%0x%08X=0x%08X,SR=0x%08X\n", R[29], instrucao, getRegisterBigger(z), getRegisterBigger(x), ExtendedBit15To32(i), R[z], R[31]);
-        printf("0x%08X:\t%-25s\t%s=%s%%0x%08X=0x%08X,SR=0x%08X\n", R[29], instrucao, getRegisterBigger(z), getRegisterBigger(x), ExtendedBit15To32(i), R[z], R[31]);
+        fprintf(output, "0x%08X:\t%-25s\t%s=%s%%0x%08X=0x%08X,SR=0x%08X\n", R[29], instrucao, getRegisterBigger(z), getRegisterBigger(x), i, R[z], R[31]);
+        printf("0x%08X:\t%-25s\t%s=%s%%0x%08X=0x%08X,SR=0x%08X\n", R[29], instrucao, getRegisterBigger(z), getRegisterBigger(x), i, R[z], R[31]);
         break;
 
 
@@ -1360,6 +1457,7 @@ int main(int argc, char *argv[]) {
         i = R[28] & 0xFFFF;
 
         addr = R[x] + ExtendedBit15To32(i);
+
         
         //shift = (8 * (3 - (addr % 4))); 
         sprintf(instrucao, "l8 %s,[%s%s%i]", getRegisterSmaller(z), getRegisterSmaller(x), (i >= 0) ? ("+") : (""), i);
@@ -1978,7 +2076,7 @@ int main(int argc, char *argv[]) {
         break;
 
 
-      //call tipe F
+      //call tipe F chamada de sub-rotina
       case 0b011110:
 
         pc = R[29];
@@ -1987,12 +2085,19 @@ int main(int argc, char *argv[]) {
         i = R[28] & 0xFFFF;
         temp = ExtendedBit15To32(i);
 
-        R[29] = (R[x] + temp);
+        MEM32[R[30] >> 2] = R[29] + 4;
+        R[30] = R[30] - 4;
+        R[29] = (R[x] + temp) << 2;
+
+        //mem[sp] = pc + 4, sp = sp - 4;
+        //pc = (rx + i16-32) << 2 
+
+        //R[29] = (R[x] + temp);
         R[29] -= 4;
         
 
         //0x????????:	call [rx+-s]             	PC=0x????????,MEM[0x????????]=0x????????  
-        sprintf(instrucao, "call [r%u%s%i]", x, (i >= 0) ? ("+") : (""), temp);
+        sprintf(instrucao, "call [%s%s%i]", getRegisterSmaller(x), (i >= 0) ? ("+") : (""), temp);
         fprintf(output, "0x%08X:\t%-25s\tPC=0x%08X,MEM[0x%08X]=0x%08X\n", pc, instrucao, R[29] + 4, sp, MEM32[sp >> 2]);
         printf("0x%08X:\t%-25s\tPC=0x%08X,MEM[0x%08X]=0x%08X\n", pc, instrucao, R[29] + 4, sp, MEM32[sp >> 2]);
         break;
@@ -2313,6 +2418,7 @@ int main(int argc, char *argv[]) {
 
     } //fim do switch case
 
+
     //sw
     if (activeSW) {
         printf("[SOFTWARE INTERRUPTION]\n");
@@ -2528,11 +2634,18 @@ int main(int argc, char *argv[]) {
   //cache saída
   printf("[CACHE]\n");
   fprintf(output, "[CACHE]\n");
+  printf("D_hit_rate: XX.XX%\n");
+  fprintf(output, "D_hit_rate: XX.XX%\n");
+  printf("I_hit_rate: XX.XX%\n");
+  fprintf(output, "I_hit_rate: XX.XX%\n");
 
   //pipeline saída
   printf("[PIPELINE]\n");
   fprintf(output, "[PIPELINE]\n");
-
+  printf("branch_prediction_accuracy: XX.XX%\n");
+  fprintf(output, "branch_prediction_accuracy: XX.XX%\n");
+  printf("performance_speed_up: X.XXx\n");
+  fprintf(output, "performance_speed_up: X.XXx\n");
 
   // terminal saída
   printf("[TERMINAL]\n");
