@@ -2525,6 +2525,16 @@ int main(int argc, char *argv[]) {
     
   } //fim do while 
 
+  //cache saída
+  printf("[CACHE]\n");
+  fprintf(output, "[CACHE]\n");
+
+  //pipeline saída
+  printf("[PIPELINE]\n");
+  fprintf(output, "[PIPELINE]\n");
+
+
+  // terminal saída
   printf("[TERMINAL]\n");
   fprintf(output, "[TERMINAL]\n");
 
